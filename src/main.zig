@@ -98,7 +98,7 @@ const Grid = struct {
         std.debug.assert(out_buf.len == self.width * self.height);
 
         for (self.grid, out_buf) |i, *o| {
-            const d = @sqrt(@intToFloat(f32, i.distance2())) / 2048.0 / @sqrt(2.0);
+            const d = @sqrt(@intToFloat(f32, i.distance2()));
             o.* = d;
         }
     }
@@ -123,9 +123,56 @@ const Grid = struct {
     }
 };
 
+fn makeSdf(
+    image: []const u8,
+    width: usize,
+    height: usize,
+    invert: bool,
+    grid_data: []Point,
+    sdf_data: []f32,
+) void {
+    var grid_inner = Grid.init(image, width, height, invert, grid_data);
+    grid_inner.process();
+    grid_inner.writeSdf(sdf_data);
+}
+
+fn writeOutput(
+    sdf_data: []const f32,
+    image_area: usize,
+    num_images: usize,
+    blending_steps: usize,
+    num_chunks: usize,
+    chunk_index: usize,
+    output_data: []f32,
+) void {
+    const chunk_size = output_data.len / num_chunks;
+    const chunk_start = chunk_index * chunk_size;
+    const chunk_end = if (output_data.len - chunk_start >= chunk_size)
+        (chunk_index + 1) * chunk_size
+    else
+        output_data.len;
+
+    const our_a_outer = sdf_data[0..image_area][chunk_start..chunk_end];
+    const our_a_inner = sdf_data[image_area .. 2 * image_area][chunk_start..chunk_end];
+    const our_b_outer = sdf_data[2 * image_area .. 3 * image_area][chunk_start..chunk_end];
+    const our_b_inner = sdf_data[3 * image_area .. 4 * image_area][chunk_start..chunk_end];
+    const our_output = output_data[chunk_start..chunk_end];
+
+    const addend = 1.0 / @intToFloat(f32, blending_steps * (num_images - 1));
+    for (our_a_outer, our_a_inner, our_b_outer, our_b_inner, our_output) |a_out, a_in, b_out, b_in, *o| {
+        for (0..blending_steps) |i| {
+            const t = @intToFloat(f32, i) / @intToFloat(f32, blending_steps);
+            const s = (1.0 - t) * (a_out - a_in) + t * (b_out - b_in);
+            if (s <= 0) {
+                o.* += addend;
+            }
+        }
+    }
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer if (gpa.deinit())
+    defer if (gpa.deinit() == .leak)
         std.log.err("Memory leaked on exit!", .{});
     const allocator = gpa.allocator();
 
@@ -176,7 +223,7 @@ pub fn main() !void {
     try validateInputFiles(input_file_paths, &width, &height);
 
     var images = try allocator.alloc([]u8, input_file_paths.len);
-    defer allocator.destroy(images);
+    defer allocator.free(images);
 
     for (input_file_paths, images) |path, *img| {
         img.* = try allocator.alloc(u8, width * height);
@@ -186,55 +233,70 @@ pub fn main() !void {
 
     var output_data = try allocator.alloc(f32, width * height);
     defer allocator.free(output_data);
-    std.mem.set(f32, output_data, 0.0);
+    for (output_data) |*o| {
+        o.* = 0.0;
+    }
+    var grid_data_raw = try allocator.alloc(Point, width * height * 4);
+    defer allocator.free(grid_data_raw);
+    var grid_data = [4][]Point{
+        grid_data_raw[0 .. width * height],
+        grid_data_raw[width * height .. 2 * width * height],
+        grid_data_raw[2 * width * height .. 3 * width * height],
+        grid_data_raw[3 * width * height .. 4 * width * height],
+    };
 
-    var grid_data = try allocator.alloc(Point, width * height);
-    defer allocator.free(grid_data);
-
-    var sdf_buffer = try allocator.alloc(f32, width * height * 2);
-    defer allocator.free(sdf_buffer);
-
-    var sdf1_outer = try allocator.alloc(f32, width * height);
-    defer allocator.free(sdf1_outer);
-
-    var sdf1_inner = try allocator.alloc(f32, width * height);
-    defer allocator.free(sdf1_inner);
-
-    var sdf2_outer = try allocator.alloc(f32, width * height);
-    defer allocator.free(sdf2_outer);
-
-    var sdf2_inner = try allocator.alloc(f32, width * height);
-    defer allocator.free(sdf2_inner);
+    var sdf_data_raw = try allocator.alloc(f32, width * height * 4);
+    defer allocator.free(sdf_data_raw);
+    var sdf_data = [4][]f32{
+        sdf_data_raw[0 .. width * height],
+        sdf_data_raw[width * height .. 2 * width * height],
+        sdf_data_raw[2 * width * height .. 3 * width * height],
+        sdf_data_raw[3 * width * height .. 4 * width * height],
+    };
 
     for (images[0 .. images.len - 1], 0..) |_, i| {
+        // generate sdf data
         {
-            var grid_outer = Grid.init(images[i], width, height, false, grid_data);
-            grid_outer.process();
-            grid_outer.writeSdf(sdf1_outer);
-
-            var grid_inner = Grid.init(images[i], width, height, true, grid_data);
-            grid_inner.process();
-            grid_inner.writeSdf(sdf1_inner);
+            var threads: [4]std.Thread = undefined;
+            for (&threads, 0..) |*thread, j| {
+                thread.* = try std.Thread.spawn(
+                    .{},
+                    makeSdf,
+                    .{
+                        images[i + j / 2],
+                        width,
+                        height,
+                        j % 2 == 1,
+                        grid_data[j],
+                        sdf_data[j],
+                    },
+                );
+            }
+            for (&threads) |thread| {
+                thread.join();
+            }
         }
+
+        // write the ouptut image
         {
-            var grid_outer = Grid.init(images[i + 1], width, height, false, grid_data);
-            grid_outer.process();
-            grid_outer.writeSdf(sdf2_outer);
-
-            var grid_inner = Grid.init(images[i + 1], width, height, true, grid_data);
-            grid_inner.process();
-            grid_inner.writeSdf(sdf2_inner);
-        }
-
-        const blending_steps = maybe_blending_steps.?;
-        for (0..blending_steps) |j| {
-            const t = @intToFloat(f32, j) / @intToFloat(f32, blending_steps);
-            for (sdf1_outer, sdf1_inner, sdf2_outer, sdf2_inner, output_data) |a_out, a_in, b_out, b_in, *o| {
-                const s = (1.0 - t) * (a_out - a_in) + t * (b_out - b_in);
-                if (s <= 0) {
-                    const addend = 1.0 / @intToFloat(f32, blending_steps * (images.len - 1));
-                    o.* += addend;
-                }
+            var threads: [12]std.Thread = undefined;
+            for (&threads, 0..) |*thread, j| {
+                thread.* = try std.Thread.spawn(
+                    .{},
+                    writeOutput,
+                    .{
+                        sdf_data_raw,
+                        width * height,
+                        images.len,
+                        maybe_blending_steps.?,
+                        threads.len,
+                        j,
+                        output_data,
+                    },
+                );
+            }
+            for (&threads) |thread| {
+                thread.join();
             }
         }
     }

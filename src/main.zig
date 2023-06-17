@@ -344,7 +344,7 @@ fn findInputFilePaths(allocator: std.mem.Allocator, dir_path: []const u8) ![][:0
 
     var it = dir.iterate();
     while (try it.next()) |file| {
-        if (file.kind != .File) {
+        if (file.kind != .file) {
             continue;
         }
 
@@ -354,7 +354,7 @@ fn findInputFilePaths(allocator: std.mem.Allocator, dir_path: []const u8) ![][:0
         try input_file_paths.append(try std.cstr.addNullByte(allocator, path));
     }
 
-    std.sort.sort([]const u8, input_file_paths.items, {}, stringAsc);
+    std.sort.block([]const u8, input_file_paths.items, {}, stringAsc);
 
     return try input_file_paths.toOwnedSlice();
 }

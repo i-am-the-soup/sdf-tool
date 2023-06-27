@@ -1,7 +1,7 @@
 # sdf-tool
 This little doodad takes in black-or-white image sequences and smoothly blends them together through some SDF magic.
 # Building
-Currently requires a relatively new development zig build (tested on Linux with zig version `0.11.0-dev.2969+855493bb8`)
+Currently requires a relatively new development zig build (tested on Linux with zig version `0.11.0-dev.3859+88284c124`)
 No fuss needed, just run `zig build -Doptimize=ReleaseFast`.
 # Usage
 ```sdf-tool <folder with input images> <path to output image> [number of blending steps (defaults to 20)]```

@@ -98,7 +98,7 @@ const Grid = struct {
         std.debug.assert(out_buf.len == self.width * self.height);
 
         for (self.grid, out_buf) |i, *o| {
-            const d = @sqrt(@intToFloat(f32, i.distance2()));
+            const d = @sqrt(@as(f32, @floatFromInt(i.distance2())));
             o.* = d;
         }
     }
@@ -158,10 +158,10 @@ fn writeOutput(
     const our_b_inner = sdf_data[3 * image_area .. 4 * image_area][chunk_start..chunk_end];
     const our_output = output_data[chunk_start..chunk_end];
 
-    const addend = 1.0 / @intToFloat(f32, blending_steps * (num_images - 1));
+    const addend = 1.0 / @as(f32, @floatFromInt(blending_steps * (num_images - 1)));
     for (our_a_outer, our_a_inner, our_b_outer, our_b_inner, our_output) |a_out, a_in, b_out, b_in, *o| {
         for (0..blending_steps) |i| {
-            const t = @intToFloat(f32, i) / @intToFloat(f32, blending_steps);
+            const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(blending_steps));
             const s = (1.0 - t) * (a_out - a_in) + t * (b_out - b_in);
             if (s <= 0) {
                 o.* += addend;
@@ -201,7 +201,7 @@ pub fn main() !void {
     }
 
     const input_dir_path = maybe_input_dir_path.?;
-    const output_file_path = try std.cstr.addNullByte(allocator, maybe_output_file_path.?);
+    const output_file_path = try allocator.dupeZ(u8, maybe_output_file_path.?);
     defer allocator.free(output_file_path);
 
     var input_file_paths = try findInputFilePaths(allocator, input_dir_path);
@@ -319,16 +319,16 @@ pub fn main() !void {
     defer allocator.free(output_image);
 
     for (output_data, output_image) |i, *o| {
-        o.* = @truncate(u8, @min(255, @floatToInt(usize, 255.0 * i)));
+        o.* = @truncate(@min(255, @as(usize, @intFromFloat(255.0 * i))));
     }
 
     if (stb.stbi_write_png(
         output_file_path.ptr,
-        @intCast(c_int, width),
-        @intCast(c_int, height),
+        @intCast(width),
+        @intCast(height),
         1,
         output_image.ptr,
-        @intCast(c_int, width),
+        @intCast(width),
     ) == 0) {
         std.log.err("Failed to write output file '{s}'", .{output_file_path});
         return error.OutputWriteFailed;
@@ -351,7 +351,7 @@ fn findInputFilePaths(allocator: std.mem.Allocator, dir_path: []const u8) ![][:0
         var path = try dir.dir.realpathAlloc(allocator, file.name);
         defer allocator.free(path);
 
-        try input_file_paths.append(try std.cstr.addNullByte(allocator, path));
+        try input_file_paths.append(try allocator.dupeZ(u8, path));
     }
 
     std.sort.block([]const u8, input_file_paths.items, {}, stringAsc);
@@ -390,8 +390,8 @@ fn validateInputFiles(input_file_paths: [][:0]const u8, out_width: *usize, out_h
         }
 
         if (out_width.* == 0 or out_height.* == 0) {
-            out_width.* = @intCast(usize, w);
-            out_height.* = @intCast(usize, h);
+            out_width.* = @intCast(w);
+            out_height.* = @intCast(h);
         }
 
         if (w != out_width.* or h != out_height.*) {
@@ -417,5 +417,5 @@ fn loadImage(path: [:0]const u8, out_buf: []u8) !void {
     std.debug.assert(c == 1);
     std.debug.assert(out_buf.len == w * h);
 
-    std.mem.copy(u8, out_buf, data_p[0..@intCast(usize, w * h)]);
+    std.mem.copy(u8, out_buf, data_p[0..@intCast(w * h)]);
 }
